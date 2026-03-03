@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>情绪感知 AI 伴侣</title>
+  <meta name="description" content="基于 MediaPipe 的实时情绪检测 AI 聊天系统" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@300;400;500;700&family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <!-- 动态背景光球 -->
+  <div class="bg-orbs" aria-hidden="true">
+    <div class="orb orb-1"></div>
+    <div class="orb orb-2"></div>
+    <div class="orb orb-3"></div>
+  </div>
+
+  <div class="app-container">
+
+    <!-- 顶部标题栏 -->
+    <header class="app-header">
+      <div class="logo">
+        <span class="logo-icon" aria-hidden="true">🧠</span>
+        <h1>情绪感知 <span class="gradient-text">AI 伴侣</span></h1>
+      </div>
+      <div class="status-bar" role="status" aria-live="polite">
+        <div class="status-dot" id="ws-status"></div>
+        <span id="ws-label">未连接</span>
+      </div>
+    </header>
+
+    <!-- 主内容区 -->
+    <main class="main-content">
+
+      <!-- 左侧：摄像头面板 -->
+      <section class="camera-panel" aria-label="摄像头与情绪检测">
+        <div class="camera-wrapper" id="camera-wrapper">
+          <video id="video" autoplay muted playsinline></video>
+          <canvas id="canvas" style="display:none"></canvas>
+
+          <!-- 情绪徽章 -->
+          <div class="emotion-overlay">
+            <div class="emotion-badge" id="emotion-badge">
+              <span class="emotion-icon" id="emotion-icon" aria-hidden="true">😐</span>
+              <div class="emotion-info">
+                <span class="emotion-label" id="emotion-label">等待检测</span>
+                <div class="confidence-bar" role="progressbar" aria-label="置信度">
+                  <div class="confidence-fill" id="confidence-fill"></div>
+                </div>
+                <span class="confidence-pct" id="confidence-pct">0%</span>
+              </div>
+            </div>
+          </div>
+
+          <!-- 摄像头未启动时的占位 -->
+          <div class="camera-placeholder" id="camera-placeholder">
+            <div class="placeholder-icon">📷</div>
+            <p>点击下方按钮启动摄像头</p>
+          </div>
+        </div>
+
+        <div class="camera-footer">
+          <button class="btn-start" id="btn-start" onclick="startCamera()">
+            <span aria-hidden="true">📷</span> 启动摄像头
+          </button>
+        </div>
+      </section>
+
+      <!-- 右侧：聊天面板 -->
+      <section class="chat-panel" aria-label="AI 聊天">
+        <div class="chat-header">
+          <div class="ai-avatar" aria-hidden="true">AI</div>
+          <div>
+            <p class="ai-name">情绪伴侣</p>
+            <p class="ai-status">基于 DeepSeek · 实时情绪感知</p>
+          </div>
+          <div class="current-emotion-chip" id="emotion-chip">😐 平静</div>
+        </div>
+
+        <div class="chat-messages" id="chat-messages" role="log" aria-live="polite">
+          <div class="message ai-message">
+            <div class="bubble">
+              👋 你好！我是你的情绪感知 AI 伴侣。<br/>
+              请先启动摄像头，我会感知你的情绪并陪你聊天 ✨
+            </div>
+          </div>
+        </div>
+
+        <div class="chat-input-area">
+          <input
+            type="text"
+            id="chat-input"
+            placeholder="输入消息，和 AI 聊聊吧..."
+            aria-label="聊天输入框"
+            onkeydown="if(event.key==='Enter') sendMessage()"
+          />
+          <button class="btn-send" id="btn-send" onclick="sendMessage()" aria-label="发送消息">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+              <line x1="22" y1="2" x2="11" y2="13"></line>
+              <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
+            </svg>
+          </button>
+        </div>
+      </section>
+
+    </main>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

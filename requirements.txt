@@ -1,0 +1,13 @@
+mediapipe
+opencv-python
+numpy
+
+# 后端服务
+fastapi
+uvicorn[standard]
+websockets
+python-multipart
+python-dotenv
+
+# AI 聊天（DeepSeek / Kimi 均兼容 OpenAI 接口）
+openai
