@@ -11,3 +11,7 @@ python-dotenv
 
 # AI 聊天（DeepSeek / Kimi 均兼容 OpenAI 接口）
 openai
+
+# 数据库
+sqlalchemy
+aiosqlite
