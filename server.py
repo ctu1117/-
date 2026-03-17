@@ -11,7 +11,12 @@ import os
 import time
 from collections import defaultdict
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
+
+# 北京时间 UTC+8
+CST = timezone(timedelta(hours=8))
+def now_cst() -> datetime:
+    return datetime.now(tz=CST).replace(tzinfo=None)
 
 import cv2
 import numpy as np
@@ -71,7 +76,7 @@ def _make_landmarker():
 @app.post("/api/session/start")
 async def start_session(db: AsyncSession = Depends(get_db)):
     """创建新的对话会话"""
-    session = DbSession(started_at=datetime.utcnow())
+    session = DbSession(started_at=now_cst())
     db.add(session)
     await db.commit()
     await db.refresh(session)
@@ -84,7 +89,7 @@ async def end_session(session_id: int, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(DbSession).where(DbSession.id == session_id))
     session = result.scalar_one_or_none()
     if session:
-        session.ended_at = datetime.utcnow()
+        session.ended_at = now_cst()
         await db.commit()
     return {"ok": True}
 
@@ -214,7 +219,7 @@ async def emotion_ws(websocket: WebSocket, session_id: int):
                             session_id=session_id,
                             emotion=emotion,
                             confidence=round(conf, 2),
-                            timestamp=datetime.utcnow(),
+                            timestamp=now_cst(),
                         )
                         db.add(log)
                         await db.commit()
@@ -279,14 +284,14 @@ async def chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
             role="user",
             content=req.message,
             emotion_at_time=req.emotion,
-            timestamp=datetime.utcnow(),
+            timestamp=now_cst(),
         )
         ai_msg = ChatMessage(
             session_id=req.session_id,
             role="ai",
             content=reply,
             emotion_at_time=req.emotion,
-            timestamp=datetime.utcnow(),
+            timestamp=now_cst(),
         )
         db.add(user_msg)
         db.add(ai_msg)
