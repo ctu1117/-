@@ -140,6 +140,26 @@ body {
 /* ── 页面容器 ────────────────────────────────────────────── */
 .page { padding-top: 72px; min-height: 100vh; position: relative; z-index: 1; }
 
+@media (max-width: 900px) {
+  .nav-bar {
+    padding: 10px 16px;
+    height: auto;
+    min-height: 60px;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .nav-links {
+    width: 100%;
+    overflow-x: auto;
+    padding-bottom: 2px;
+  }
+
+  .page {
+    padding-top: 94px;
+  }
+}
+
 /* ── 滚动条 ──────────────────────────────────────────────── */
 ::-webkit-scrollbar { width: 5px; }
 ::-webkit-scrollbar-track { background: transparent; }

@@ -25,7 +25,7 @@ class Base(DeclarativeBase):
 
 async def init_db():
     """创建所有数据表（如不存在则新建）"""
-    from models_db import Session, EmotionLog, ChatMessage  # noqa: F401
+    from models_db import User, UserMemory, Session, EmotionLog, ChatMessage, JournalEntry  # noqa: F401
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 

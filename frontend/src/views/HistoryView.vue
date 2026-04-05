@@ -24,6 +24,7 @@
             <div class="session-item-top">
               <span class="session-emotion">{{ getEmotionIcon(s.dominant_emotion) }}</span>
               <span class="session-date">{{ formatDate(s.started_at) }}</span>
+              <button class="btn-delete" @click.stop="deleteSession(s.id)" title="Delete">x</button>
             </div>
             <div class="session-item-bottom">
               <span class="session-msg-count">💬 {{ s.message_count }} 条消息</span>
@@ -77,14 +78,22 @@
             </div>
           </div>
 
-          <!-- 中部：饼图 + 全局饼图 -->
+          <!-- 中部：饼图与趋势图 -->
           <div class="charts-row">
             <div class="chart-card glass">
               <h3 class="chart-title">本次情绪分布</h3>
               <EmotionPieChart :data="sessionEmotions" />
             </div>
             <div class="chart-card glass">
-              <h3 class="chart-title">历史全局情绪分布</h3>
+              <h3 class="chart-title">会话情绪波动走势</h3>
+              <EmotionTrendChart :data="sessionTrendData" />
+            </div>
+          </div>
+
+          <!-- 下部：全局统计 -->
+          <div class="charts-row">
+            <div class="chart-card glass">
+              <h3 class="chart-title">全局情绪统计</h3>
               <EmotionPieChart :data="globalStats" />
             </div>
           </div>
@@ -119,6 +128,8 @@
 <script setup>
 import { ref, reactive, onMounted } from 'vue'
 import EmotionPieChart from '../components/EmotionPieChart.vue'
+import EmotionTrendChart from '../components/EmotionTrendChart.vue'
+import { apiFetch } from '../utils/api'
 
 // ── 情绪配置 ──────────────────────────────────────────────
 const EMOTION_MAP = {
@@ -140,6 +151,7 @@ const loading = ref(true)
 
 const sessionEmotions  = reactive({})
 const sessionMessages  = reactive([])
+const sessionTrendData = reactive([])
 const globalStats      = reactive({})
 
 // ── 加载会话列表 ──────────────────────────────────────────
@@ -151,7 +163,7 @@ onMounted(async () => {
 async function loadSessions() {
   loading.value = true
   try {
-    const res = await fetch('/api/sessions')
+    const res = await apiFetch('/api/sessions')
     const data = await res.json()
     sessions.splice(0, sessions.length, ...data)
   } finally {
@@ -160,9 +172,23 @@ async function loadSessions() {
 }
 
 async function loadGlobalStats() {
-  const res = await fetch('/api/stats')
+  const res = await apiFetch('/api/stats')
   const data = await res.json()
+  Object.keys(globalStats).forEach(k => delete globalStats[k])
   Object.assign(globalStats, data)
+}
+
+async function deleteSession(sessionId) {
+  if (!confirm('Are you sure to delete this session?')) return
+  const res = await apiFetch(`/api/session/${sessionId}`, { method: 'DELETE' })
+  if (res.ok) {
+    if (selectedId.value === sessionId) {
+      selectedSession.value = null
+      selectedId.value = null
+    }
+    await loadSessions()
+    await loadGlobalStats()
+  }
 }
 
 async function selectSession(s) {
@@ -170,13 +196,18 @@ async function selectSession(s) {
   selectedId.value = s.id
 
   // 加载情绪分布
-  const eRes = await fetch(`/api/session/${s.id}/emotions`)
+  const eRes = await apiFetch(`/api/session/${s.id}/emotions`)
   const eData = await eRes.json()
   Object.keys(sessionEmotions).forEach(k => delete sessionEmotions[k])
   Object.assign(sessionEmotions, eData)
 
+  // 加载情绪波动折线图
+  const tRes = await apiFetch(`/api/session/${s.id}/trend`)
+  const tData = await tRes.json()
+  sessionTrendData.splice(0, sessionTrendData.length, ...tData)
+
   // 加载聊天记录
-  const mRes = await fetch(`/api/session/${s.id}/messages`)
+  const mRes = await apiFetch(`/api/session/${s.id}/messages`)
   const mData = await mRes.json()
   sessionMessages.splice(0, sessionMessages.length, ...mData)
 }
@@ -259,11 +290,32 @@ function calcDuration(start, end) {
 .session-item-top {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 8px;
   margin-bottom: 4px;
 }
 .session-emotion { font-size: 1.2rem; }
-.session-date { font-size: 0.72rem; color: var(--text-secondary); }
+.session-date { font-size: 0.72rem; color: var(--text-secondary); flex: 1; text-align: right; }
+.btn-delete {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  border: none;
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.7rem;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.2s;
+  flex-shrink: 0;
+  opacity: 0;
+}
+.session-item:hover .btn-delete { opacity: 1; }
+.btn-delete:hover {
+  background: rgba(239, 68, 68, 0.2);
+  color: #ef4444;
+}
 .session-item-bottom {
   display: flex;
   justify-content: space-between;

@@ -102,6 +102,7 @@
 <script setup>
 import { ref, computed, reactive, nextTick, onUnmounted } from 'vue'
 import EmotionPieChart from '../components/EmotionPieChart.vue'
+import { apiFetch } from '../utils/api'
 
 // ── 情绪配置 ──────────────────────────────────────────────
 const EMOTION_MAP = {
@@ -142,7 +143,7 @@ const confidencePct = computed(() => Math.round(currentConfidence.value * 100))
 // ── 启动摄像头 + 创建会话 ─────────────────────────────────
 async function startCamera() {
   // 1. 创建数据库会话
-  const res = await fetch('/api/session/start', { method: 'POST' })
+  const res = await apiFetch('/api/session/start', { method: 'POST' })
   const data = await res.json()
   sessionId.value = data.session_id
 
@@ -202,7 +203,7 @@ async function sendMessage() {
 
   isWaiting.value = true
   try {
-    const res = await fetch('/api/chat', {
+    const res = await apiFetch('/api/chat', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
@@ -352,6 +353,7 @@ onUnmounted(() => {
   font-weight: 700;
   font-size: 0.85rem;
   flex-shrink: 0;
+  color: #fff;
 }
 .ai-name { font-weight: 600; font-size: 0.9rem; }
 .ai-status { font-size: 0.75rem; color: var(--text-secondary); }
