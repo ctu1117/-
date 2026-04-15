@@ -1,11 +1,12 @@
 """
 数据库连接与初始化
-────────────────────────────────────────────────
-使用 SQLAlchemy 2.x (async) + aiosqlite
-数据库文件：emotion.db（项目根目录）
+
+使用 SQLAlchemy 2.x async + aiosqlite
+数据库文件: emotion.db
 """
 
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
+from sqlalchemy import text
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
 DATABASE_URL = "sqlite+aiosqlite:///./emotion.db"
@@ -24,13 +25,17 @@ class Base(DeclarativeBase):
 
 
 async def init_db():
-    """创建所有数据表（如不存在则新建）"""
-    from models_db import User, UserMemory, Session, EmotionLog, ChatMessage, JournalEntry  # noqa: F401
+    from models_db import ChatMessage, EmotionLog, JournalEntry, Session, User, UserMemory  # noqa: F401
+
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
 
+        result = await conn.execute(text("PRAGMA table_info(journal_entries)"))
+        columns = [row[1] for row in result.fetchall()]
+        if "session_id" not in columns:
+            await conn.execute(text("ALTER TABLE journal_entries ADD COLUMN session_id INTEGER"))
+
 
 async def get_db():
-    """FastAPI 依赖注入：提供一个异步数据库 Session"""
     async with AsyncSessionLocal() as session:
         yield session

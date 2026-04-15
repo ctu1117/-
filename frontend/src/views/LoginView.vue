@@ -22,43 +22,43 @@
 </template>
 
 <script setup>
-import { ref } from 'vue';
-import { useRouter } from 'vue-router';
-import { apiFetch } from '../utils/api';
+import { ref } from 'vue'
+import { useRouter } from 'vue-router'
 
-const username = ref('');
-const password = ref('');
-const error = ref('');
-const loading = ref(false);
-const router = useRouter();
+const username = ref('')
+const password = ref('')
+const error = ref('')
+const loading = ref(false)
+const router = useRouter()
 
 const handleLogin = async () => {
-  error.value = '';
-  loading.value = true;
+  error.value = ''
+  loading.value = true
   try {
-    const formData = new URLSearchParams();
-    formData.append('username', username.value);
-    formData.append('password', password.value);
+    const formData = new URLSearchParams()
+    formData.append('username', username.value)
+    formData.append('password', password.value)
 
     const res = await fetch('/api/login', {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: formData
-    });
+      body: formData,
+    })
 
-    const data = await res.json();
+    const data = await res.json()
     if (res.ok) {
-      localStorage.setItem('token', data.access_token);
-      router.push('/');
+      localStorage.setItem('token', data.access_token)
+      localStorage.setItem('username', data.username || username.value)
+      router.push('/')
     } else {
-      error.value = data.detail || '登录失败';
+      error.value = data.detail || '登录失败'
     }
-  } catch (err) {
-    error.value = '网络错误';
+  } catch {
+    error.value = '网络错误'
   } finally {
-    loading.value = false;
+    loading.value = false
   }
-};
+}
 </script>
 
 <style scoped>

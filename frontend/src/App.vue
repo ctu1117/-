@@ -13,7 +13,10 @@
     <div class="nav-links">
       <RouterLink class="nav-link" to="/">对话</RouterLink>
       <RouterLink class="nav-link" to="/history">历史分析</RouterLink>
+      <RouterLink class="nav-link" to="/report">今日报告</RouterLink>
       <RouterLink class="nav-link" to="/journal">情绪手记</RouterLink>
+      <RouterLink class="nav-link" to="/profile">个人中心</RouterLink>
+      <RouterLink class="nav-link" to="/emotion-guide">识别说明</RouterLink>
       <a v-if="showLogout" href="#" class="nav-link" @click.prevent="logout">退出登录</a>
     </div>
   </nav>
@@ -29,8 +32,9 @@ const router = useRouter()
 const route = useRoute()
 const showLogout = computed(() => route.path !== '/login' && route.path !== '/register')
 
-const logout = () => {
+function logout() {
   localStorage.removeItem('token')
+  localStorage.removeItem('username')
   router.push('/login')
 }
 </script>

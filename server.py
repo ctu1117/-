@@ -1,64 +1,66 @@
 """
 FastAPI 后端服务
-────────────────────────────────────────────────
-启动方式: python -m uvicorn server:app --reload
-地址:      http://localhost:8000
-────────────────────────────────────────────────
+
+启动方式:
+    python -m uvicorn server:app --reload
+访问地址:
+    http://localhost:8000
 """
 
 import base64
 import os
 import time
-from collections import defaultdict
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, time as dt_time, timedelta, timezone
 
-# 北京时间 UTC+8
+import bcrypt
+import cv2
+import jwt
+import mediapipe as mp
+import numpy as np
+from dotenv import load_dotenv
+from fastapi import Depends, FastAPI, HTTPException, WebSocket, WebSocketDisconnect, status
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from fastapi.staticfiles import StaticFiles
+from openai import OpenAI
+from pydantic import BaseModel, Field
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from database import AsyncSessionLocal, get_db, init_db
+from emotion.detector import get_emotion
+from models_db import ChatMessage, EmotionLog, JournalEntry, Session as DbSession, User, UserMemory
+
 CST = timezone(timedelta(hours=8))
+
+
 def now_cst() -> datetime:
     return datetime.now(tz=CST).replace(tzinfo=None)
 
-import cv2
-import numpy as np
-import mediapipe as mp
-from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Depends, HTTPException, status
-from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
-from openai import OpenAI
-from sqlalchemy import select, func
-from sqlalchemy.ext.asyncio import AsyncSession
-import bcrypt
-import jwt
 
-from database import init_db, get_db
-from models_db import Session as DbSession, EmotionLog, ChatMessage, User, UserMemory, JournalEntry
-from emotion.detector import get_emotion
-
-# ── JWT Auth 配置 ─────────────────────────────────────────────────────────────
 SECRET_KEY = os.getenv("JWT_SECRET", "super-secret-key-12345")
 ALGORITHM = "HS256"
-ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7 # 7天
-
+ACCESS_TOKEN_EXPIRE_MINUTES = 60 * 24 * 7
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/login")
 
+
 def verify_password(plain_password: str, hashed_password: str) -> bool:
-    return bcrypt.checkpw(plain_password.encode('utf-8'), hashed_password.encode('utf-8'))
+    return bcrypt.checkpw(plain_password.encode("utf-8"), hashed_password.encode("utf-8"))
+
 
 def get_password_hash(password: str) -> str:
-    return bcrypt.hashpw(password.encode('utf-8'), bcrypt.gensalt()).decode('utf-8')
+    return bcrypt.hashpw(password.encode("utf-8"), bcrypt.gensalt()).decode("utf-8")
 
-def create_access_token(data: dict, expires_delta: timedelta | None = None):
+
+def create_access_token(data: dict, expires_delta: timedelta | None = None) -> str:
     to_encode = data.copy()
-    if expires_delta:
-        expire = datetime.now(timezone.utc) + expires_delta
-    else:
-        expire = datetime.now(timezone.utc) + timedelta(minutes=15)
+    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=15))
     to_encode.update({"exp": expire})
     return jwt.encode(to_encode, SECRET_KEY, algorithm=ALGORITHM)
 
-async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(get_db)):
+
+async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession = Depends(get_db)) -> User:
     credentials_exception = HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Could not validate credentials",
@@ -66,52 +68,47 @@ async def get_current_user(token: str = Depends(oauth2_scheme), db: AsyncSession
     )
     try:
         payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
-        username: str = payload.get("sub")
+        username = payload.get("sub")
         if username is None:
             raise credentials_exception
-    except jwt.InvalidTokenError:
-        raise credentials_exception
-        
+    except jwt.InvalidTokenError as exc:
+        raise credentials_exception from exc
+
     result = await db.execute(select(User).where(User.username == username))
     user = result.scalar_one_or_none()
     if user is None:
         raise credentials_exception
     return user
 
-# ── 环境配置 ─────────────────────────────────────────────────────────────────
+
 load_dotenv()
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "")
+ai_client = OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
 
-ai_client = OpenAI(
-    api_key=DEEPSEEK_API_KEY,
-    base_url="https://api.deepseek.com",
-)
 
-# ── 应用生命周期（启动时初始化数据库）────────────────────────────────────────
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     await init_db()
     yield
 
-# ── FastAPI App ────────────────────────────────────────────────────────────────
-app = FastAPI(title="情绪感知 AI 聊天系统", lifespan=lifespan, debug=True)
 
-# ── MediaPipe 初始化 ──────────────────────────────────────────────────────────
-_BaseOptions        = mp.tasks.BaseOptions
-_FaceLandmarker     = mp.tasks.vision.FaceLandmarker
-_FaceLandmarkerOpts = mp.tasks.vision.FaceLandmarkerOptions
-_VideoMode          = mp.tasks.vision.RunningMode.VIDEO
+app = FastAPI(title="情绪感知 AI 伴侣系统", lifespan=lifespan, debug=True)
 
+_BaseOptions = mp.tasks.BaseOptions
+_FaceLandmarker = mp.tasks.vision.FaceLandmarker
+_FaceLandmarkerOptions = mp.tasks.vision.FaceLandmarkerOptions
+_VideoMode = mp.tasks.vision.RunningMode.VIDEO
 MODEL_PATH = os.path.join(os.path.dirname(__file__), "models", "face_landmarker.task")
 
+
 def _make_landmarker():
-    opts = _FaceLandmarkerOpts(
+    options = _FaceLandmarkerOptions(
         base_options=_BaseOptions(model_asset_path=MODEL_PATH),
         running_mode=_VideoMode,
         output_face_blendshapes=True,
         num_faces=1,
     )
-    return _FaceLandmarker.create_from_options(opts)
+    return _FaceLandmarker.create_from_options(options)
 
 
 class UserCreate(BaseModel):
@@ -123,23 +120,66 @@ class JournalCreate(BaseModel):
     title: str = Field(default="", max_length=120)
     content: str = Field(min_length=1, max_length=4000)
     emotion: str = Field(default="Neutral :|", max_length=32)
+    session_id: int | None = None
+
+
+class ChatRequest(BaseModel):
+    message: str
+    emotion: str = "Neutral :|"
+    confidence: float = 0.0
+    history: list = []
+    session_id: int = 0
+
+
+def serialize_journal_entry(entry: JournalEntry) -> dict:
+    return {
+        "id": entry.id,
+        "title": entry.title,
+        "content": entry.content,
+        "emotion": entry.emotion,
+        "session_id": entry.session_id,
+        "created_at": entry.created_at.isoformat(),
+        "updated_at": entry.updated_at.isoformat(),
+    }
+
+
+def stabilize_emotion(history: deque[tuple[str, float]], min_votes: int = 3) -> tuple[str, float]:
+    valid_items = [(emotion, confidence) for emotion, confidence in history if emotion != "No Face"]
+    if not valid_items:
+        return "No Face", 0.0
+
+    counts: dict[str, int] = defaultdict(int)
+    confidences: dict[str, float] = defaultdict(float)
+    for emotion, confidence in valid_items:
+        counts[emotion] += 1
+        confidences[emotion] += confidence
+
+    stable_emotion = max(counts, key=lambda item: (counts[item], confidences[item]))
+    vote_count = counts[stable_emotion]
+    avg_confidence = round(confidences[stable_emotion] / vote_count, 2)
+
+    if stable_emotion == "Neutral :|":
+        return ("Neutral :|", avg_confidence) if vote_count >= 2 else ("No Face", 0.0)
+
+    if vote_count < min_votes:
+        return "Neutral :|", 0.0
+
+    return stable_emotion, avg_confidence
+
 
 @app.post("/api/register")
 async def register(user: UserCreate, db: AsyncSession = Depends(get_db)):
     result = await db.execute(select(User).where(User.username == user.username))
     if result.scalar_one_or_none():
         raise HTTPException(status_code=400, detail="Username already registered")
-    
-    hashed_password = get_password_hash(user.password)
-    new_user = User(username=user.username, password_hash=hashed_password)
+
+    new_user = User(username=user.username, password_hash=get_password_hash(user.password))
     db.add(new_user)
-    await db.flush() # 获取自增 ID
-    
-    # 初始化记忆
-    memory = UserMemory(user_id=new_user.id)
-    db.add(memory)
+    await db.flush()
+    db.add(UserMemory(user_id=new_user.id))
     await db.commit()
     return {"message": "Success"}
+
 
 @app.post("/api/login")
 async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: AsyncSession = Depends(get_db)):
@@ -147,21 +187,14 @@ async def login(form_data: OAuth2PasswordRequestForm = Depends(), db: AsyncSessi
     user = result.scalar_one_or_none()
     if not user or not verify_password(form_data.password, user.password_hash):
         raise HTTPException(status_code=400, detail="Incorrect username or password")
-    
+
     access_token_expires = timedelta(minutes=ACCESS_TOKEN_EXPIRE_MINUTES)
-    access_token = create_access_token(
-        data={"sub": user.username}, expires_delta=access_token_expires
-    )
-    return {"access_token": access_token, "token_type": "bearer", "username": user.username}
+    token = create_access_token(data={"sub": user.username}, expires_delta=access_token_expires)
+    return {"access_token": token, "token_type": "bearer", "username": user.username}
 
-
-# ══════════════════════════════════════════════════════════════
-# 会话管理 API
-# ══════════════════════════════════════════════════════════════
 
 @app.post("/api/session/start")
 async def start_session(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """创建新的对话会话"""
     session = DbSession(user_id=current_user.id, started_at=now_cst())
     db.add(session)
     await db.commit()
@@ -171,7 +204,6 @@ async def start_session(db: AsyncSession = Depends(get_db), current_user: User =
 
 @app.post("/api/session/end/{session_id}")
 async def end_session(session_id: int, db: AsyncSession = Depends(get_db)):
-    """结束指定会话"""
     result = await db.execute(select(DbSession).where(DbSession.id == session_id))
     session = result.scalar_one_or_none()
     if session:
@@ -182,10 +214,7 @@ async def end_session(session_id: int, db: AsyncSession = Depends(get_db)):
 
 @app.delete("/api/session/{session_id}")
 async def delete_session(session_id: int, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """删除指定会话及其关联的情绪记录和聊天记录（级联删除）"""
-    result = await db.execute(
-        select(DbSession).where(DbSession.id == session_id, DbSession.user_id == current_user.id)
-    )
+    result = await db.execute(select(DbSession).where(DbSession.id == session_id, DbSession.user_id == current_user.id))
     session = result.scalar_one_or_none()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
@@ -194,52 +223,47 @@ async def delete_session(session_id: int, db: AsyncSession = Depends(get_db), cu
     return {"ok": True}
 
 
-# ══════════════════════════════════════════════════════════════
-# 历史数据查询 API
-# ══════════════════════════════════════════════════════════════
-
 @app.get("/api/sessions")
 async def list_sessions(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """获取当前用户所有会话列表（倒序）"""
     result = await db.execute(
-        select(DbSession)
-        .where(DbSession.user_id == current_user.id)
-        .order_by(DbSession.started_at.desc())
+        select(DbSession).where(DbSession.user_id == current_user.id).order_by(DbSession.started_at.desc())
     )
     sessions = result.scalars().all()
 
-    out = []
-    for s in sessions:
-        # 统计该会话的主要情绪
-        emo_result = await db.execute(
+    output = []
+    for session in sessions:
+        emotion_result = await db.execute(
             select(EmotionLog.emotion, func.count(EmotionLog.id).label("cnt"))
-            .where(EmotionLog.session_id == s.id)
+            .where(EmotionLog.session_id == session.id)
             .group_by(EmotionLog.emotion)
             .order_by(func.count(EmotionLog.id).desc())
             .limit(1)
         )
-        top = emo_result.first()
+        top = emotion_result.first()
         dominant_emotion = top.emotion if top else "Neutral :|"
 
-        # 消息数量
-        msg_result = await db.execute(
-            select(func.count(ChatMessage.id)).where(ChatMessage.session_id == s.id)
+        message_result = await db.execute(
+            select(func.count(ChatMessage.id)).where(ChatMessage.session_id == session.id)
         )
-        msg_count = msg_result.scalar() or 0
+        journal_result = await db.execute(
+            select(func.count(JournalEntry.id)).where(JournalEntry.session_id == session.id)
+        )
 
-        out.append({
-            "id": s.id,
-            "started_at": s.started_at.isoformat(),
-            "ended_at": s.ended_at.isoformat() if s.ended_at else None,
-            "dominant_emotion": dominant_emotion,
-            "message_count": msg_count,
-        })
-    return out
+        output.append(
+            {
+                "id": session.id,
+                "started_at": session.started_at.isoformat(),
+                "ended_at": session.ended_at.isoformat() if session.ended_at else None,
+                "dominant_emotion": dominant_emotion,
+                "message_count": message_result.scalar() or 0,
+                "journal_count": journal_result.scalar() or 0,
+            }
+        )
+    return output
 
 
 @app.get("/api/session/{session_id}/emotions")
 async def get_session_emotions(session_id: int, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """获取某会话的情绪分布（饼图数据）"""
     result = await db.execute(
         select(EmotionLog.emotion, func.count(EmotionLog.id).label("cnt"))
         .join(DbSession)
@@ -252,28 +276,26 @@ async def get_session_emotions(session_id: int, db: AsyncSession = Depends(get_d
 
 @app.get("/api/session/{session_id}/messages")
 async def get_session_messages(session_id: int, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """获取某会话的完整聊天记录"""
     result = await db.execute(
         select(ChatMessage)
         .join(DbSession)
         .where(ChatMessage.session_id == session_id, DbSession.user_id == current_user.id)
         .order_by(ChatMessage.timestamp)
     )
-    msgs = result.scalars().all()
+    messages = result.scalars().all()
     return [
         {
-            "role": m.role,
-            "content": m.content,
-            "emotion_at_time": m.emotion_at_time,
-            "timestamp": m.timestamp.isoformat(),
+            "role": message.role,
+            "content": message.content,
+            "emotion_at_time": message.emotion_at_time,
+            "timestamp": message.timestamp.isoformat(),
         }
-        for m in msgs
+        for message in messages
     ]
 
 
 @app.get("/api/session/{session_id}/trend")
 async def get_session_trend(session_id: int, db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """获取会话内的情感随时间波动的折线图数据"""
     result = await db.execute(
         select(EmotionLog)
         .join(DbSession)
@@ -285,42 +307,37 @@ async def get_session_trend(session_id: int, db: AsyncSession = Depends(get_db),
         {
             "timestamp": log.timestamp.isoformat(),
             "emotion": log.emotion,
-            "confidence": round(log.confidence, 2)
+            "confidence": round(log.confidence, 2),
         }
         for log in logs
     ]
 
+
 @app.get("/api/emotions/calendar")
 async def get_emotions_calendar(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """获取所有历史记录每一天的主导情绪，用于渲染热力打卡日历"""
-    # 截取日期部分，SQLite 是按字符串存储的
     result = await db.execute(
         select(func.date(EmotionLog.timestamp).label("day"), EmotionLog.emotion, func.count(EmotionLog.id).label("cnt"))
         .join(DbSession)
         .where(DbSession.user_id == current_user.id)
         .group_by(func.date(EmotionLog.timestamp), EmotionLog.emotion)
     )
-    
-    day_counts = defaultdict(lambda: defaultdict(int))
+
+    day_counts: dict[str, dict[str, int]] = defaultdict(lambda: defaultdict(int))
     for row in result.all():
-        # row.day 是形如 '2026-04-05' 的字符串
         day_counts[row.day][row.emotion] = row.cnt
-        
+
     calendar_data = []
     for day, counts in day_counts.items():
-        if "No Face" in counts:
-            del counts["No Face"] # 不统计无脸时间
+        counts.pop("No Face", None)
         if not counts:
             continue
-        dominant = max(counts.items(), key=lambda x: x[1])[0]
+        dominant = max(counts.items(), key=lambda item: item[1])[0]
         calendar_data.append([day, dominant])
-        
     return calendar_data
 
 
 @app.get("/api/stats")
 async def global_stats(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
-    """当前用户的全局情绪统计（饼图数据）"""
     result = await db.execute(
         select(EmotionLog.emotion, func.count(EmotionLog.id).label("cnt"))
         .join(DbSession)
@@ -331,25 +348,64 @@ async def global_stats(db: AsyncSession = Depends(get_db), current_user: User = 
     return {row.emotion: row.cnt for row in rows}
 
 
+@app.get("/api/reports/today")
+async def today_report(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
+    today = now_cst().date()
+    day_start = datetime.combine(today, dt_time.min)
+    day_end = day_start + timedelta(days=1)
+
+    sessions_result = await db.execute(
+        select(DbSession)
+        .where(DbSession.user_id == current_user.id, DbSession.started_at >= day_start, DbSession.started_at < day_end)
+        .order_by(DbSession.started_at.desc())
+    )
+    sessions_today = sessions_result.scalars().all()
+    session_ids = [session.id for session in sessions_today]
+
+    dominant_emotion = "Neutral :|"
+    message_count = 0
+
+    if session_ids:
+        message_result = await db.execute(
+            select(func.count(ChatMessage.id)).where(ChatMessage.session_id.in_(session_ids))
+        )
+        message_count = message_result.scalar() or 0
+
+        emotion_result = await db.execute(
+            select(EmotionLog.emotion, func.count(EmotionLog.id).label("cnt"))
+            .where(EmotionLog.session_id.in_(session_ids))
+            .group_by(EmotionLog.emotion)
+            .order_by(func.count(EmotionLog.id).desc())
+            .limit(1)
+        )
+        top = emotion_result.first()
+        if top:
+            dominant_emotion = top.emotion
+
+    journal_result = await db.execute(
+        select(func.count(JournalEntry.id)).where(
+            JournalEntry.user_id == current_user.id,
+            JournalEntry.created_at >= day_start,
+            JournalEntry.created_at < day_end,
+        )
+    )
+
+    return {
+        "date": today.isoformat(),
+        "session_count": len(sessions_today),
+        "message_count": message_count,
+        "journal_count": journal_result.scalar() or 0,
+        "dominant_emotion": dominant_emotion,
+    }
+
+
 @app.get("/api/journal")
 async def list_journal_entries(db: AsyncSession = Depends(get_db), current_user: User = Depends(get_current_user)):
     result = await db.execute(
-        select(JournalEntry)
-        .where(JournalEntry.user_id == current_user.id)
-        .order_by(JournalEntry.created_at.desc())
+        select(JournalEntry).where(JournalEntry.user_id == current_user.id).order_by(JournalEntry.created_at.desc())
     )
     entries = result.scalars().all()
-    return [
-        {
-            "id": entry.id,
-            "title": entry.title,
-            "content": entry.content,
-            "emotion": entry.emotion,
-            "created_at": entry.created_at.isoformat(),
-            "updated_at": entry.updated_at.isoformat(),
-        }
-        for entry in entries
-    ]
+    return [serialize_journal_entry(entry) for entry in entries]
 
 
 @app.post("/api/journal")
@@ -357,8 +413,18 @@ async def create_journal_entry(payload: JournalCreate, db: AsyncSession = Depend
     content = payload.content.strip()
     if not content:
         raise HTTPException(status_code=400, detail="Journal content cannot be empty")
+
+    session_id = payload.session_id
+    if session_id is not None:
+        session_result = await db.execute(
+            select(DbSession).where(DbSession.id == session_id, DbSession.user_id == current_user.id)
+        )
+        if session_result.scalar_one_or_none() is None:
+            raise HTTPException(status_code=404, detail="Session not found")
+
     entry = JournalEntry(
         user_id=current_user.id,
+        session_id=session_id,
         title=payload.title.strip(),
         content=content,
         emotion=payload.emotion.strip() or "Neutral :|",
@@ -366,14 +432,7 @@ async def create_journal_entry(payload: JournalCreate, db: AsyncSession = Depend
     db.add(entry)
     await db.commit()
     await db.refresh(entry)
-    return {
-        "id": entry.id,
-        "title": entry.title,
-        "content": entry.content,
-        "emotion": entry.emotion,
-        "created_at": entry.created_at.isoformat(),
-        "updated_at": entry.updated_at.isoformat(),
-    }
+    return serialize_journal_entry(entry)
 
 
 @app.delete("/api/journal/{entry_id}")
@@ -389,26 +448,21 @@ async def delete_journal_entry(entry_id: int, db: AsyncSession = Depends(get_db)
     return {"ok": True}
 
 
-# ══════════════════════════════════════════════════════════════
-# WebSocket：视频帧 → 情绪检测 + 写入数据库
-# ══════════════════════════════════════════════════════════════
-
 @app.websocket("/ws/emotion/{session_id}")
 async def emotion_ws(websocket: WebSocket, session_id: int):
     await websocket.accept()
     start_time = time.time()
     last_emotion = None
+    emotion_history: deque[tuple[str, float]] = deque(maxlen=5)
 
     async with AsyncSessionLocal() as db:
         with _make_landmarker() as landmarker:
             try:
                 while True:
                     data = await websocket.receive_text()
-
-                    # base64 data URL 解码 → OpenCV 帧
                     payload = data.split(",", 1)[1] if "," in data else data
                     img_bytes = base64.b64decode(payload)
-                    arr   = np.frombuffer(img_bytes, np.uint8)
+                    arr = np.frombuffer(img_bytes, np.uint8)
                     frame = cv2.imdecode(arr, cv2.IMREAD_COLOR)
 
                     if frame is None:
@@ -420,96 +474,77 @@ async def emotion_ws(websocket: WebSocket, session_id: int):
                     result = landmarker.detect_for_video(mp_img, ts_ms)
 
                     if result and result.face_blendshapes:
-                        emotion, conf = get_emotion(result.face_blendshapes[0])
+                        raw_emotion, raw_confidence = get_emotion(result.face_blendshapes[0])
                     else:
-                        emotion, conf = "No Face", 0.0
+                        raw_emotion, raw_confidence = "No Face", 0.0
 
-                    # 情绪变化时写入数据库（避免过于频繁写入）
-                    if emotion != last_emotion and emotion != "No Face":
-                        log = EmotionLog(
-                            session_id=session_id,
-                            emotion=emotion,
-                            confidence=round(conf, 2),
-                            timestamp=now_cst(),
+                    emotion_history.append((raw_emotion, raw_confidence))
+                    stable_emotion, stable_confidence = stabilize_emotion(emotion_history)
+
+                    if stable_emotion != last_emotion and stable_emotion not in {"No Face", "Neutral :|"}:
+                        db.add(
+                            EmotionLog(
+                                session_id=session_id,
+                                emotion=stable_emotion,
+                                confidence=stable_confidence,
+                                timestamp=now_cst(),
+                            )
                         )
-                        db.add(log)
                         await db.commit()
-                        last_emotion = emotion
+                        last_emotion = stable_emotion
+                    elif stable_emotion == "Neutral :|":
+                        last_emotion = stable_emotion
 
-                    await websocket.send_json({
-                        "emotion":    emotion,
-                        "confidence": round(conf, 2),
-                    })
-
+                    await websocket.send_json({"emotion": stable_emotion, "confidence": stable_confidence})
             except WebSocketDisconnect:
                 pass
 
 
-# ── AsyncSessionLocal 在 WebSocket 中使用 ────────────────────────────────────
-from database import AsyncSessionLocal  # noqa: E402
-
-
-# ══════════════════════════════════════════════════════════════
-# REST API：AI 聊天 + 保存记录
-# ══════════════════════════════════════════════════════════════
-
-class ChatRequest(BaseModel):
-    message:    str
-    emotion:    str   = "Neutral :|"
-    confidence: float = 0.0
-    history:    list  = []
-    session_id: int   = 0     # 0 表示未创建会话（兼容旧前端）
-
-
 @app.post("/api/chat")
 async def chat(req: ChatRequest, db: AsyncSession = Depends(get_db)):
-    system_prompt = f"""你是一个具有极强共情能力的 AI 视觉伴侣。
-    你现在正通过摄像头看着用户，你实时观察到了用户的情绪是：【{req.emotion}】。
-
+    system_prompt = f"""你是一个具有很强共情能力的 AI 情绪陪伴助手。
+你现在通过摄像头观察到用户当前情绪是：{req.emotion}。
 要求：
-1. **必须在回复的开头或合适位置，自然地提到你观察到的情绪**。
-   - 例如 (Happy): "看到你笑得这么开心，我也跟着高兴起来了！发生什么好事了？"
-   - 例如 (Sad): "你的眼神看起来有些低落，是遇到什么心事了吗？我会一直陪着你的。"
-   - 例如 (Angry): "感觉你现在心情有些急躁，先深呼吸一下，慢慢跟我说..."
-2. 语气要极其自然，像真正的朋友在面对面聊天。
-3. 结合用户说的话：{req.message}。
-4. 中文回复，字数控制在 100 字以内。"""
+1. 在回复中自然提到你观察到的情绪变化。
+2. 语气像朋友一样温和、真诚。
+3. 结合用户输入内容：{req.message}
+4. 中文回复，控制在 100 字以内。"""
 
     messages = [{"role": "system", "content": system_prompt}]
-    for h in req.history[-8:]:
-        messages.append(h)
+    for history_item in req.history[-8:]:
+        messages.append(history_item)
     messages.append({"role": "user", "content": req.message})
 
-    resp = ai_client.chat.completions.create(
+    response = ai_client.chat.completions.create(
         model="deepseek-chat",
         messages=messages,
         max_tokens=300,
         temperature=0.8,
     )
-    reply = resp.choices[0].message.content
+    reply = response.choices[0].message.content
 
-    # 保存聊天记录到数据库
     if req.session_id:
-        user_msg = ChatMessage(
-            session_id=req.session_id,
-            role="user",
-            content=req.message,
-            emotion_at_time=req.emotion,
-            timestamp=now_cst(),
+        db.add(
+            ChatMessage(
+                session_id=req.session_id,
+                role="user",
+                content=req.message,
+                emotion_at_time=req.emotion,
+                timestamp=now_cst(),
+            )
         )
-        ai_msg = ChatMessage(
-            session_id=req.session_id,
-            role="ai",
-            content=reply,
-            emotion_at_time=req.emotion,
-            timestamp=now_cst(),
+        db.add(
+            ChatMessage(
+                session_id=req.session_id,
+                role="ai",
+                content=reply,
+                emotion_at_time=req.emotion,
+                timestamp=now_cst(),
+            )
         )
-        db.add(user_msg)
-        db.add(ai_msg)
         await db.commit()
 
     return {"reply": reply}
 
 
-# ── 静态文件（必须在所有路由之后挂载）────────────────────────────────────────
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

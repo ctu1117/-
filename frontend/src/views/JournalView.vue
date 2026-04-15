@@ -3,9 +3,9 @@
     <div class="journal-page">
       <aside class="journal-sidebar glass">
         <div class="sidebar-top">
-          <p class="eyebrow">手记</p>
+          <p class="eyebrow">Emotion Journal</p>
           <h1>情绪手记</h1>
-          <p class="sidebar-copy">把当下的情绪和文字留在这里，像翻看手记一样，安静、轻盈、可回看。</p>
+          <p class="sidebar-copy">把一次会话后的感受、情绪和反思留在这里，让聊天记录和主观体验形成完整闭环。</p>
         </div>
 
         <div class="journal-list">
@@ -20,10 +20,14 @@
           >
             <div class="entry-card-top">
               <span class="entry-emoji">{{ getEmotionMeta(entry.emotion).icon }}</span>
-              <span class="entry-date">{{ formatDate(entry.created_at) }}</span>
+              <span class="entry-date">{{ formatShortDate(entry.created_at) }}</span>
             </div>
             <h3>{{ entry.title || '未命名手记' }}</h3>
             <p>{{ excerpt(entry.content) }}</p>
+            <div class="entry-footer">
+              <span v-if="entry.session_id" class="entry-session-tag">已绑定会话 #{{ entry.session_id }}</span>
+              <RouterLink class="entry-link" :to="`/journal/${entry.id}`" @click.stop>详情页</RouterLink>
+            </div>
           </button>
         </div>
       </aside>
@@ -32,12 +36,16 @@
         <section class="compose-card glass">
           <div class="compose-head">
             <div>
-              <p class="eyebrow">新建手记</p>
+              <p class="eyebrow">New Entry</p>
               <h2>记录这一刻</h2>
             </div>
             <button class="btn btn-primary" @click="saveEntry" :disabled="saving || !canSave">
               {{ saving ? '保存中...' : '保存手记' }}
             </button>
+          </div>
+
+          <div v-if="boundSessionId" class="bound-session">
+            当前将关联会话 #{{ boundSessionId }}
           </div>
 
           <div class="emotion-picker">
@@ -58,14 +66,13 @@
             class="title-input"
             type="text"
             maxlength="120"
-            placeholder="给今天起一个标题"
+            placeholder="给这篇手记起一个标题"
           />
-
           <textarea
             v-model="content"
             class="note-input"
             maxlength="4000"
-            placeholder="今天发生了什么？为什么会有这样的情绪？把它写下来。"
+            placeholder="今天发生了什么？这次会话带给你怎样的情绪变化？"
           ></textarea>
 
           <div class="compose-footer">
@@ -80,15 +87,21 @@
               <div class="preview-emotion" :class="getEmotionMeta(selectedEntry.emotion).chipStyle">
                 {{ getEmotionMeta(selectedEntry.emotion).icon }} {{ getEmotionMeta(selectedEntry.emotion).longLabel }}
               </div>
-              <button class="btn btn-ghost" @click="removeEntry(selectedEntry.id)">删除</button>
+              <div class="preview-actions">
+                <RouterLink class="btn btn-ghost" :to="`/journal/${selectedEntry.id}`">打开详情页</RouterLink>
+                <button class="btn btn-ghost" @click="removeEntry(selectedEntry.id)">删除</button>
+              </div>
             </div>
             <h2>{{ selectedEntry.title || '未命名手记' }}</h2>
-            <p class="preview-date">创建于 {{ formatDateTime(selectedEntry.created_at) }}</p>
+            <p class="preview-date">
+              创建于 {{ formatDateTime(selectedEntry.created_at) }}
+              <span v-if="selectedEntry.session_id"> · 关联会话 #{{ selectedEntry.session_id }}</span>
+            </p>
             <article class="preview-content">{{ selectedEntry.content }}</article>
           </div>
 
           <div v-else class="empty-preview">
-            <p class="eyebrow">预览</p>
+            <p class="eyebrow">Preview</p>
             <h2>选中一篇手记</h2>
             <p>左侧会显示你保存过的手记，这里可以沉浸式阅读和回看。</p>
           </div>
@@ -99,10 +112,12 @@
 </template>
 
 <script setup>
-import { computed, onMounted, ref } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
+import { RouterLink, useRoute } from 'vue-router'
 import { apiFetch } from '../utils/api'
 import { JOURNAL_EMOTIONS, getEmotionMeta } from '../utils/emotions'
 
+const route = useRoute()
 const entries = ref([])
 const loading = ref(true)
 const saving = ref(false)
@@ -113,16 +128,29 @@ const emotions = JOURNAL_EMOTIONS
 const selectedEmotion = ref('Neutral :|')
 const title = ref('')
 const content = ref('')
+const boundSessionId = ref(null)
 
 const canSave = computed(() => content.value.trim().length > 0)
 
-onMounted(loadEntries)
+onMounted(async () => {
+  syncQueryState()
+  await loadEntries()
+})
+
+watch(() => route.query, syncQueryState)
+
+function syncQueryState() {
+  boundSessionId.value = route.query.session_id ? Number(route.query.session_id) : null
+  if (route.query.emotion) {
+    selectedEmotion.value = route.query.emotion
+  }
+}
 
 async function loadEntries() {
   loading.value = true
   try {
-    const res = await apiFetch('/api/journal')
-    const data = await res.json()
+    const response = await apiFetch('/api/journal')
+    const data = await response.json()
     entries.value = data
     selectedEntry.value = data[0] ?? null
   } finally {
@@ -135,16 +163,17 @@ async function saveEntry() {
   error.value = ''
   saving.value = true
   try {
-    const res = await apiFetch('/api/journal', {
+    const response = await apiFetch('/api/journal', {
       method: 'POST',
       body: JSON.stringify({
         title: title.value,
         content: content.value,
         emotion: selectedEmotion.value,
+        session_id: boundSessionId.value,
       }),
     })
-    const data = await res.json()
-    if (!res.ok) {
+    const data = await response.json()
+    if (!response.ok) {
       error.value = data.detail || '保存失败'
       return
     }
@@ -152,8 +181,9 @@ async function saveEntry() {
     selectedEntry.value = data
     title.value = ''
     content.value = ''
+    boundSessionId.value = null
     selectedEmotion.value = 'Neutral :|'
-  } catch (err) {
+  } catch {
     error.value = '网络异常，请稍后再试'
   } finally {
     saving.value = false
@@ -162,8 +192,8 @@ async function saveEntry() {
 
 async function removeEntry(entryId) {
   if (!confirm('确认删除这篇手记吗？')) return
-  const res = await apiFetch(`/api/journal/${entryId}`, { method: 'DELETE' })
-  if (!res.ok) return
+  const response = await apiFetch(`/api/journal/${entryId}`, { method: 'DELETE' })
+  if (!response.ok) return
   entries.value = entries.value.filter((entry) => entry.id !== entryId)
   selectedEntry.value = entries.value[0] ?? null
 }
@@ -172,253 +202,58 @@ function excerpt(text) {
   return text.length > 56 ? `${text.slice(0, 56)}...` : text
 }
 
-function formatDate(iso) {
+function formatShortDate(iso) {
   const date = new Date(iso)
   return `${date.getMonth() + 1}月${date.getDate()}日`
 }
 
 function formatDateTime(iso) {
   const date = new Date(iso)
-  const month = String(date.getMonth() + 1).padStart(2, '0')
-  const day = String(date.getDate()).padStart(2, '0')
-  const hour = String(date.getHours()).padStart(2, '0')
-  const minute = String(date.getMinutes()).padStart(2, '0')
-  return `${date.getFullYear()}-${month}-${day} ${hour}:${minute}`
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')} ${String(date.getHours()).padStart(2, '0')}:${String(date.getMinutes()).padStart(2, '0')}`
 }
 </script>
 
 <style scoped>
-.journal-page {
-  max-width: 1400px;
-  margin: 0 auto;
-  padding: 20px;
-  display: grid;
-  grid-template-columns: 320px 1fr;
-  gap: 18px;
-  min-height: calc(100vh - 72px);
-}
-
-.journal-sidebar {
-  padding: 24px 18px;
-  display: flex;
-  flex-direction: column;
-  gap: 20px;
-}
-
-.sidebar-top h1,
-.compose-head h2,
-.preview-card h2 {
-  font-family: 'Georgia', 'Times New Roman', serif;
-  letter-spacing: 0.02em;
-}
-
-.eyebrow {
-  color: #9ca3c6;
-  font-size: 0.76rem;
-  letter-spacing: 0.14em;
-  margin-bottom: 8px;
-}
-
-.sidebar-copy {
-  color: var(--text-secondary);
-  line-height: 1.7;
-}
-
-.journal-list {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-  overflow-y: auto;
-  padding-right: 4px;
-}
-
-.list-state {
-  color: var(--text-secondary);
-  padding: 24px 8px;
-}
-
-.entry-card {
-  text-align: left;
-  border: 1px solid rgba(255, 255, 255, 0.08);
-  background: rgba(255, 248, 238, 0.06);
-  border-radius: 20px;
-  padding: 16px;
-  color: var(--text-primary);
-  cursor: pointer;
-  transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease;
-}
-
-.entry-card:hover,
-.entry-card.active {
-  transform: translateY(-1px);
-  border-color: rgba(255, 255, 255, 0.18);
-  background: rgba(255, 248, 238, 0.12);
-}
-
-.entry-card-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 10px;
-}
-
-.entry-card h3 {
-  font-size: 1rem;
-  margin-bottom: 6px;
-}
-
-.entry-card p,
-.entry-date {
-  color: var(--text-secondary);
-  line-height: 1.6;
-}
-
-.journal-main {
-  display: grid;
-  grid-template-columns: minmax(0, 520px) minmax(0, 1fr);
-  gap: 18px;
-}
-
-.compose-card,
-.preview-card {
-  padding: 24px;
-}
-
-.compose-card {
-  background:
-    radial-gradient(circle at top left, rgba(255, 216, 170, 0.22), transparent 35%),
-    rgba(255, 250, 244, 0.05);
-}
-
-.preview-card {
-  background:
-    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.03)),
-    rgba(14, 17, 30, 0.55);
-}
-
-.compose-head,
-.preview-head {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 12px;
-  margin-bottom: 18px;
-}
-
-.emotion-picker {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 10px;
-  margin-bottom: 18px;
-}
-
-.emotion-option {
-  border: 1px solid transparent;
-  background: rgba(255, 255, 255, 0.06);
-  color: var(--text-primary);
-  border-radius: 999px;
-  padding: 10px 16px;
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-}
-
-.emotion-option.selected {
-  border-color: rgba(255, 255, 255, 0.24);
-  box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.1);
-}
-
-.title-input,
-.note-input {
-  width: 100%;
-  border: none;
-  background: rgba(255, 255, 255, 0.05);
-  color: var(--text-primary);
-  border-radius: 18px;
-  padding: 16px 18px;
-  font-family: inherit;
-}
-
-.title-input {
-  font-size: 1.05rem;
-  margin-bottom: 14px;
-}
-
-.note-input {
-  min-height: 340px;
-  resize: vertical;
-  line-height: 1.8;
-  font-size: 0.96rem;
-}
-
-.title-input:focus,
-.note-input:focus {
-  outline: 1px solid rgba(255, 255, 255, 0.18);
-}
-
-.compose-footer {
-  margin-top: 12px;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  color: var(--text-secondary);
-  font-size: 0.78rem;
-}
-
-.error-text {
-  color: #fda4af;
-}
-
-.preview-emotion {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 8px 14px;
-  border-radius: 999px;
-}
-
-.preview-date {
-  color: var(--text-secondary);
-  margin: 8px 0 18px;
-}
-
-.preview-content {
-  white-space: pre-wrap;
-  line-height: 1.9;
-  color: #edf1ff;
-}
-
-.empty-preview {
-  display: flex;
-  min-height: 100%;
-  flex-direction: column;
-  justify-content: center;
-  color: var(--text-secondary);
-}
-
-.emotion-happy { background: rgba(247, 201, 72, 0.14); color: #f7d970; }
-.emotion-neutral { background: rgba(125, 211, 199, 0.14); color: #9ae6d7; }
-.emotion-sad { background: rgba(110, 168, 247, 0.14); color: #8dbcf9; }
-.emotion-angry { background: rgba(247, 124, 106, 0.14); color: #ffb1a4; }
-.emotion-surprise { background: rgba(167, 139, 250, 0.14); color: #c4afff; }
-
-@media (max-width: 1100px) {
-  .journal-page,
-  .journal-main {
-    grid-template-columns: 1fr;
-  }
-}
-
-@media (max-width: 720px) {
-  .journal-page {
-    padding: 14px;
-  }
-
-  .compose-head,
-  .preview-head {
-    flex-direction: column;
-    align-items: flex-start;
-  }
-}
+.journal-page { max-width: 1400px; margin: 0 auto; padding: 20px; display: grid; grid-template-columns: 320px 1fr; gap: 18px; min-height: calc(100vh - 72px); }
+.journal-sidebar { padding: 24px 18px; display: flex; flex-direction: column; gap: 20px; }
+.sidebar-top h1, .compose-head h2, .preview-card h2 { font-family: 'Georgia', 'Times New Roman', serif; letter-spacing: 0.02em; }
+.eyebrow { color: #9ca3c6; font-size: 0.76rem; letter-spacing: 0.14em; margin-bottom: 8px; }
+.sidebar-copy { color: var(--text-secondary); line-height: 1.7; }
+.journal-list { display: flex; flex-direction: column; gap: 12px; overflow-y: auto; padding-right: 4px; }
+.list-state { color: var(--text-secondary); padding: 24px 8px; }
+.entry-card { text-align: left; border: 1px solid rgba(255,255,255,0.08); background: rgba(255,248,238,0.06); border-radius: 20px; padding: 16px; color: var(--text-primary); cursor: pointer; transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease; }
+.entry-card:hover, .entry-card.active { transform: translateY(-1px); border-color: rgba(255,255,255,0.18); background: rgba(255,248,238,0.12); }
+.entry-card-top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
+.entry-card h3 { font-size: 1rem; margin-bottom: 6px; }
+.entry-card p, .entry-date { color: var(--text-secondary); line-height: 1.6; }
+.entry-footer { margin-top: 10px; display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.entry-session-tag { display: inline-block; padding: 2px 8px; border-radius: 999px; background: rgba(93,224,230,0.12); color: #8ae9ec; font-size: 0.72rem; }
+.entry-link { color: var(--accent-1); text-decoration: none; font-size: 0.78rem; }
+.journal-main { display: grid; grid-template-columns: minmax(0, 520px) minmax(0, 1fr); gap: 18px; }
+.compose-card, .preview-card { padding: 24px; }
+.compose-card { background: radial-gradient(circle at top left, rgba(255,216,170,0.22), transparent 35%), rgba(255,250,244,0.05); }
+.preview-card { background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.03)), rgba(14,17,30,0.55); }
+.compose-head, .preview-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 18px; }
+.preview-actions { display: flex; gap: 10px; }
+.bound-session { margin-bottom: 16px; padding: 10px 14px; border-radius: 14px; background: rgba(93,224,230,0.12); color: #9ae6d7; }
+.emotion-picker { display: flex; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; }
+.emotion-option { border: 1px solid transparent; background: rgba(255,255,255,0.06); color: var(--text-primary); border-radius: 999px; padding: 10px 16px; display: inline-flex; align-items: center; gap: 8px; cursor: pointer; }
+.emotion-option.selected { border-color: rgba(255,255,255,0.24); box-shadow: inset 0 0 0 1px rgba(255,255,255,0.1); }
+.title-input, .note-input { width: 100%; border: none; background: rgba(255,255,255,0.05); color: var(--text-primary); border-radius: 18px; padding: 16px 18px; font-family: inherit; }
+.title-input { font-size: 1.05rem; margin-bottom: 14px; }
+.note-input { min-height: 340px; resize: vertical; line-height: 1.8; font-size: 0.96rem; }
+.title-input:focus, .note-input:focus { outline: 1px solid rgba(255,255,255,0.18); }
+.compose-footer { margin-top: 12px; display: flex; align-items: center; justify-content: space-between; color: var(--text-secondary); font-size: 0.78rem; }
+.error-text { color: #fda4af; }
+.preview-emotion { display: inline-flex; align-items: center; gap: 8px; padding: 8px 14px; border-radius: 999px; }
+.preview-date { color: var(--text-secondary); margin: 8px 0 18px; }
+.preview-content { white-space: pre-wrap; line-height: 1.9; color: #edf1ff; }
+.empty-preview { display: flex; min-height: 100%; flex-direction: column; justify-content: center; color: var(--text-secondary); }
+.emotion-happy { background: rgba(247,201,72,0.14); color: #f7d970; }
+.emotion-neutral { background: rgba(125,211,199,0.14); color: #9ae6d7; }
+.emotion-sad { background: rgba(110,168,247,0.14); color: #8dbcf9; }
+.emotion-angry { background: rgba(247,124,106,0.14); color: #ffb1a4; }
+.emotion-surprise { background: rgba(167,139,250,0.14); color: #c4afff; }
+@media (max-width: 1100px) { .journal-page, .journal-main { grid-template-columns: 1fr; } }
+@media (max-width: 720px) { .journal-page { padding: 14px; } .compose-head, .preview-head { flex-direction: column; align-items: flex-start; } .preview-actions { flex-direction: column; width: 100%; } }
 </style>

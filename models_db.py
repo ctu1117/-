@@ -53,6 +53,7 @@ class Session(Base):
 
     emotion_logs: Mapped[list["EmotionLog"]]   = relationship(back_populates="session", cascade="all, delete-orphan")
     chat_messages: Mapped[list["ChatMessage"]] = relationship(back_populates="session", cascade="all, delete-orphan")
+    journal_entries: Mapped[list["JournalEntry"]] = relationship(back_populates="session")
 
 
 class EmotionLog(Base):
@@ -85,6 +86,7 @@ class JournalEntry(Base):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     user_id: Mapped[int] = mapped_column(Integer, ForeignKey("users.id"))
+    session_id: Mapped[int | None] = mapped_column(Integer, ForeignKey("sessions.id"), nullable=True)
     title: Mapped[str] = mapped_column(String(120), default="")
     content: Mapped[str] = mapped_column(Text)
     emotion: Mapped[str] = mapped_column(String(32), default="Neutral :|")
@@ -92,3 +94,4 @@ class JournalEntry(Base):
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=now_cst, onupdate=now_cst)
 
     user: Mapped["User"] = relationship(back_populates="journal_entries")
+    session: Mapped["Session"] = relationship(back_populates="journal_entries")
